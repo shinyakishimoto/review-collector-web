@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EC口コミ収集ツール</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue:    #1a56db;
+      --blue-dk: #1140a0;
+      --blue-lt: #ebf2ff;
+      --green:   #0a7c42;
+      --red:     #c0392b;
+      --yellow:  #f39c12;
+      --gray-1:  #f4f6fb;
+      --gray-2:  #e4e9f2;
+      --gray-3:  #9aa5b8;
+      --gray-4:  #4a5568;
+      --text:    #1e2535;
+      --radius:  8px;
+      --shadow:  0 2px 12px rgba(0,0,0,.08);
+    }
+
+    body {
+      font-family: "Hiragino Kaku Gothic ProN", "Meiryo", "Yu Gothic", sans-serif;
+      background: var(--gray-1);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── ヘッダー ── */
+    header {
+      background: var(--blue);
+      color: #fff;
+      padding: 16px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.15);
+    }
+    header svg { flex-shrink: 0; }
+    header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: .03em; }
+    header p  { font-size: .8rem; opacity: .8; margin-top: 2px; }
+
+    /* ── メインレイアウト ── */
+    main {
+      max-width: 960px;
+      margin: 32px auto;
+      padding: 0 16px 64px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    /* ── カード ── */
+    .card {
+      background: #fff;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 24px;
+    }
+    .card-title {
+      font-size: .8rem;
+      font-weight: 700;
+      color: var(--blue);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .card-title span {
+      background: var(--blue);
+      color: #fff;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .75rem;
+    }
+
+    /* ── URL入力 ── */
+    .url-input-area {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .url-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .url-row input {
+      flex: 1;
+      border: 1.5px solid var(--gray-2);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      font-size: .95rem;
+      font-family: inherit;
+      transition: border-color .15s;
+      outline: none;
+    }
+    .url-row input:focus { border-color: var(--blue); }
+    .url-row input::placeholder { color: var(--gray-3); font-size: .88rem; }
+    .badge {
+      font-size: .72rem;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 3px 7px;
+      white-space: nowrap;
+    }
+    .badge-amazon  { background: #ff9900; color: #111; }
+    .badge-rakuten { background: #bf0000; color: #fff; }
+    .badge-unknown { background: var(--gray-2); color: var(--gray-4); }
+    .btn-icon {
+      border: none;
+      background: none;
+      cursor: pointer;
+      color: var(--gray-3);
+      padding: 6px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      transition: color .15s, background .15s;
+    }
+    .btn-icon:hover { color: var(--red); background: #fef2f2; }
+    .btn-add {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1.5px dashed var(--blue);
+      color: var(--blue);
+      background: var(--blue-lt);
+      border-radius: var(--radius);
+      padding: 9px 16px;
+      font-size: .88rem;
+      font-weight: 600;
+      cursor: pointer;
+      width: max-content;
+      transition: background .15s;
+    }
+    .btn-add:hover { background: #d6e6ff; }
+
+    /* ── 設定 ── */
+    .settings-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    label { font-size: .88rem; color: var(--gray-4); font-weight: 500; }
+    .settings-row input[type=number] {
+      width: 80px;
+      border: 1.5px solid var(--gray-2);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      font-size: .95rem;
+      font-family: inherit;
+      outline: none;
+      text-align: center;
+    }
+    .settings-row input[type=number]:focus { border-color: var(--blue); }
+    .hint { font-size: .78rem; color: var(--gray-3); }
+
+    /* ── 実行ボタン ── */
+    #btn-start {
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 14px 36px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: background .15s, transform .1s;
+      align-self: flex-start;
+    }
+    #btn-start:hover:not(:disabled) { background: var(--blue-dk); }
+    #btn-start:active:not(:disabled) { transform: scale(.98); }
+    #btn-start:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ── プログレス ── */
+    #progress-section { display: none; }
+    .progress-list { display: flex; flex-direction: column; gap: 10px; }
+    .progress-item {
+      border: 1px solid var(--gray-2);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 12px;
+      font-size: .88rem;
+    }
+    .progress-item .url-label {
+      color: var(--gray-4);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .progress-item .status { font-weight: 600; white-space: nowrap; }
+    .status-waiting  { color: var(--gray-3); }
+    .status-running  { color: var(--blue); }
+    .status-done     { color: var(--green); }
+    .status-error    { color: var(--red); }
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid var(--blue-lt);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .icon-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .icon-dot.waiting { background: var(--gray-2); }
+    .icon-dot.done    { background: var(--green); }
+    .icon-dot.error   { background: var(--red); }
+    .overall-bar-wrap { margin-top: 8px; }
+    .overall-bar-bg {
+      background: var(--gray-2);
+      border-radius: 999px;
+      height: 8px;
+      overflow: hidden;
+    }
+    .overall-bar-fill {
+      background: var(--blue);
+      height: 100%;
+      border-radius: 999px;
+      width: 0%;
+      transition: width .3s ease;
+    }
+    .overall-label { font-size: .8rem; color: var(--gray-3); margin-top: 4px; }
+
+    /* ── 結果テーブル ── */
+    #result-section { display: none; }
+    .result-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .result-toolbar input[type=text] {
+      border: 1.5px solid var(--gray-2);
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      font-size: .88rem;
+      font-family: inherit;
+      outline: none;
+      width: 200px;
+    }
+    .result-toolbar input[type=text]:focus { border-color: var(--blue); }
+    .filter-select {
+      border: 1.5px solid var(--gray-2);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      font-size: .88rem;
+      font-family: inherit;
+      outline: none;
+      cursor: pointer;
+      background: #fff;
+    }
+    .filter-select:focus { border-color: var(--blue); }
+    .result-count {
+      margin-left: auto;
+      font-size: .85rem;
+      color: var(--gray-3);
+      font-weight: 600;
+    }
+    .btn-export {
+      background: var(--green);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 9px 18px;
+      font-size: .88rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      transition: background .15s;
+    }
+    .btn-export:hover { background: #095e32; }
+
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .85rem;
+    }
+    thead th {
+      background: var(--gray-1);
+      color: var(--gray-4);
+      font-weight: 700;
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 2px solid var(--gray-2);
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+    thead th:hover { background: var(--gray-2); }
+    thead th .sort-arrow { margin-left: 4px; color: var(--gray-3); }
+    tbody tr { border-bottom: 1px solid var(--gray-2); transition: background .1s; }
+    tbody tr:hover { background: var(--gray-1); }
+    tbody td { padding: 10px 12px; vertical-align: top; }
+    .cell-mall span { display: inline-block; }
+    .cell-body { max-width: 320px; }
+    .cell-body-text {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      cursor: pointer;
+      line-height: 1.5;
+    }
+    .cell-body-text.expanded { -webkit-line-clamp: unset; }
+    .stars { color: #f4a200; letter-spacing: -1px; }
+    .no-data {
+      text-align: center;
+      color: var(--gray-3);
+      padding: 40px;
+      font-size: .9rem;
+    }
+
+    /* ── モーダル ── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.4);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+      padding: 16px;
+    }
+    .modal-overlay.hidden { display: none; }
+    .modal {
+      background: #fff;
+      border-radius: 12px;
+      padding: 28px;
+      max-width: 600px;
+      width: 100%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 40px rgba(0,0,0,.2);
+    }
+    .modal h3 { font-size: 1rem; margin-bottom: 12px; }
+    .modal p { font-size: .9rem; line-height: 1.7; color: var(--gray-4); white-space: pre-wrap; }
+    .modal-close {
+      float: right;
+      background: none;
+      border: none;
+      font-size: 1.4rem;
+      cursor: pointer;
+      color: var(--gray-3);
+      line-height: 1;
+    }
+    .modal-close:hover { color: var(--text); }
+
+    /* ── 注意書き ── */
+    .notice {
+      background: #fffbeb;
+      border-left: 4px solid var(--yellow);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: 12px 16px;
+      font-size: .82rem;
+      color: #7d5a0a;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+  </svg>
+  <div>
+    <h1>EC口コミ収集ツール</h1>
+    <p>Amazon・楽天市場から競合商品のレビューを自動収集します</p>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── 注意書き ── -->
+  <div class="notice">
+    ⚠️ 本ツールはAmazon・楽天の利用規約に基づきサーバー負荷に配慮した設計です。収集データの取り扱いは貴社の法務方針に従ってご利用ください。Amazonはアクセス制限が入る場合があります。
+  </div>
+
+  <!-- ── Step 1: URL入力 ── -->
+  <div class="card">
+    <div class="card-title"><span>1</span>収集対象URLを入力</div>
+    <div class="url-input-area" id="url-list"></div>
+    <button class="btn-add" onclick="addUrlRow()" style="margin-top:12px">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      URLを追加
+    </button>
+  </div>
+
+  <!-- ── Step 2: 設定 ── -->
+  <div class="card">
+    <div class="card-title"><span>2</span>設定</div>
+    <div class="settings-row">
+      <label for="max-reviews">1商品あたり最大取得件数</label>
+      <input type="number" id="max-reviews" value="30" min="5" max="100" />
+      <span class="hint">最大100件</span>
+    </div>
+  </div>
+
+  <!-- ── Step 3: 実行 ── -->
+  <button id="btn-start" onclick="startCollection()">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    口コミ収集を開始
+  </button>
+
+  <!-- ── プログレス ── -->
+  <div class="card" id="progress-section">
+    <div class="card-title">収集中...</div>
+    <div class="overall-bar-wrap">
+      <div class="overall-bar-bg"><div class="overall-bar-fill" id="overall-bar"></div></div>
+      <div class="overall-label" id="overall-label">0 / 0 完了</div>
+    </div>
+    <div class="progress-list" id="progress-list" style="margin-top:16px"></div>
+  </div>
+
+  <!-- ── 結果 ── -->
+  <div class="card" id="result-section">
+    <div class="card-title">
+      <span>✓</span>収集結果
+    </div>
+    <div class="result-toolbar">
+      <input type="text" id="search-box" placeholder="キーワード検索..." oninput="renderTable()" />
+      <select class="filter-select" id="filter-mall" onchange="renderTable()">
+        <option value="">全モール</option>
+        <option value="Amazon">Amazon</option>
+        <option value="楽天">楽天</option>
+      </select>
+      <select class="filter-select" id="filter-rating" onchange="renderTable()">
+        <option value="">全評価</option>
+        <option value="5">★5</option>
+        <option value="4">★4</option>
+        <option value="3">★3</option>
+        <option value="2">★2</option>
+        <option value="1">★1</option>
+      </select>
+      <div class="result-count" id="result-count">0件</div>
+      <button class="btn-export" onclick="exportExcel()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Excelでダウンロード
+      </button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead id="table-head"></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<!-- ── 詳細モーダル ── -->
+<div class="modal-overlay hidden" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModalDirect()">×</button>
+    <h3 id="modal-title"></h3>
+    <p id="modal-body"></p>
+  </div>
+</div>
+
+<!-- SheetJS (Excel出力) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<script>
+// ══════════════════════════════════════════
+// 状態管理
+// ══════════════════════════════════════════
+let allReviews = [];   // 収集済みレビュー全件
+let sortKey = null;
+let sortAsc = true;
+
+// ══════════════════════════════════════════
+// URL入力行の管理
+// ══════════════════════════════════════════
+function addUrlRow(value = "") {
+  const list = document.getElementById("url-list");
+  const row = document.createElement("div");
+  row.className = "url-row";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "https://www.amazon.co.jp/dp/B0... または https://item.rakuten.co.jp/shop/item/";
+  input.value = value;
+  input.addEventListener("input", () => updateBadge(input, badge));
+  input.addEventListener("paste", (e) => {
+    setTimeout(() => updateBadge(input, badge), 10);
+  });
+
+  const badge = document.createElement("span");
+  badge.className = "badge badge-unknown";
+  badge.textContent = "未入力";
+
+  const btn = document.createElement("button");
+  btn.className = "btn-icon";
+  btn.title = "削除";
+  btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  btn.onclick = () => {
+    if (document.querySelectorAll(".url-row").length > 1) {
+      row.remove();
+    } else {
+      input.value = "";
+      updateBadge(input, badge);
+    }
+  };
+
+  row.appendChild(input);
+  row.appendChild(badge);
+  row.appendChild(btn);
+  list.appendChild(row);
+
+  updateBadge(input, badge);
+  input.focus();
+}
+
+function updateBadge(input, badge) {
+  const url = input.value.trim();
+  if (!url) {
+    badge.className = "badge badge-unknown"; badge.textContent = "未入力"; return;
+  }
+  if (url.includes("amazon.co.jp")) {
+    badge.className = "badge badge-amazon"; badge.textContent = "Amazon";
+  } else if (url.includes("rakuten.co.jp")) {
+    badge.className = "badge badge-rakuten"; badge.textContent = "楽天";
+  } else {
+    badge.className = "badge badge-unknown"; badge.textContent = "不明";
+  }
+}
+
+// 初期1行
+addUrlRow();
+
+// ══════════════════════════════════════════
+// 収集処理
+// ══════════════════════════════════════════
+async function startCollection() {
+  const inputs = [...document.querySelectorAll(".url-row input")];
+  const urls = inputs.map(i => i.value.trim()).filter(Boolean);
+
+  if (urls.length === 0) {
+    alert("URLを1件以上入力してください。");
+    return;
+  }
+
+  const maxReviews = parseInt(document.getElementById("max-reviews").value) || 30;
+
+  // UI初期化
+  allReviews = [];
+  document.getElementById("btn-start").disabled = true;
+  document.getElementById("progress-section").style.display = "block";
+  document.getElementById("result-section").style.display = "none";
+
+  const progressList = document.getElementById("progress-list");
+  progressList.innerHTML = "";
+
+  // プログレスアイテムを作成
+  const items = urls.map((url, i) => {
+    const el = document.createElement("div");
+    el.className = "progress-item";
+    el.innerHTML = `
+      <div class="icon-dot waiting" id="dot-${i}"></div>
+      <div class="url-label" title="${escHtml(url)}">${escHtml(url)}</div>
+      <div class="status status-waiting" id="status-${i}">待機中</div>
+    `;
+    progressList.appendChild(el);
+    return el;
+  });
+
+  let doneCount = 0;
+  updateBar(0, urls.length);
+
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    const dot    = document.getElementById(`dot-${i}`);
+    const status = document.getElementById(`status-${i}`);
+
+    // running
+    dot.outerHTML = `<div class="spinner" id="dot-${i}"></div>`;
+    status.className = "status status-running";
+    status.textContent = "収集中...";
+
+    try {
+      const result = await fetchReviews(url, maxReviews);
+
+      if (result.error && result.reviews.length === 0) {
+        document.getElementById(`dot-${i}`).outerHTML = `<div class="icon-dot error" id="dot-${i}"></div>`;
+        status.className = "status status-error";
+        status.textContent = `エラー`;
+        items[i].title = result.error;
+      } else {
+        document.getElementById(`dot-${i}`).outerHTML = `<div class="icon-dot done" id="dot-${i}"></div>`;
+        status.className = "status status-done";
+        status.textContent = `${result.reviews.length}件取得`;
+        allReviews.push(...result.reviews);
+        if (result.error) {
+          items[i].title = `警告: ${result.error}`;
+        }
+      }
+    } catch (e) {
+      document.getElementById(`dot-${i}`).outerHTML = `<div class="icon-dot error" id="dot-${i}"></div>`;
+      status.className = "status status-error";
+      status.textContent = "通信エラー";
+    }
+
+    doneCount++;
+    updateBar(doneCount, urls.length);
+  }
+
+  // 完了
+  document.getElementById("btn-start").disabled = false;
+  document.getElementById("card-title") // no-op
+
+  if (allReviews.length > 0) {
+    buildTableHeader();
+    renderTable();
+    document.getElementById("result-section").style.display = "block";
+    document.getElementById("result-section").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+async function fetchReviews(url, maxReviews) {
+  const res = await fetch("/api/scrape", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, max_reviews: maxReviews }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    return { error: err.error || `HTTPエラー ${res.status}`, reviews: [] };
+  }
+  return res.json();
+}
+
+function updateBar(done, total) {
+  const pct = total > 0 ? Math.round(done / total * 100) : 0;
+  document.getElementById("overall-bar").style.width = pct + "%";
+  document.getElementById("overall-label").textContent = `${done} / ${total} 完了（${pct}%）`;
+}
+
+// ══════════════════════════════════════════
+// テーブル描画
+// ══════════════════════════════════════════
+const COLUMNS = [
+  { key: "モール",    label: "モール",    width: "80px" },
+  { key: "商品名",    label: "商品名",    width: "160px" },
+  { key: "評価",      label: "評価",      width: "80px" },
+  { key: "タイトル",  label: "タイトル",  width: "140px" },
+  { key: "本文",      label: "本文",      width: "320px" },
+  { key: "投稿日",    label: "投稿日",    width: "100px" },
+];
+
+function buildTableHeader() {
+  const thead = document.getElementById("table-head");
+  const tr = document.createElement("tr");
+  COLUMNS.forEach(col => {
+    const th = document.createElement("th");
+    th.style.width = col.width;
+    th.innerHTML = `${col.label} <span class="sort-arrow">↕</span>`;
+    th.onclick = () => {
+      if (sortKey === col.key) sortAsc = !sortAsc;
+      else { sortKey = col.key; sortAsc = true; }
+      renderTable();
+    };
+    tr.appendChild(th);
+  });
+  thead.innerHTML = "";
+  thead.appendChild(tr);
+}
+
+function renderTable() {
+  const keyword = (document.getElementById("search-box").value || "").toLowerCase();
+  const filterMall   = document.getElementById("filter-mall").value;
+  const filterRating = document.getElementById("filter-rating").value;
+
+  let rows = allReviews.filter(r => {
+    if (filterMall   && r["モール"] !== filterMall) return false;
+    if (filterRating && String(Math.floor(r["評価"] || 0)) !== filterRating) return false;
+    if (keyword) {
+      const searchable = [r["商品名"], r["タイトル"], r["本文"]].join(" ").toLowerCase();
+      if (!searchable.includes(keyword)) return false;
+    }
+    return true;
+  });
+
+  if (sortKey) {
+    rows = [...rows].sort((a, b) => {
+      const va = a[sortKey] ?? "";
+      const vb = b[sortKey] ?? "";
+      if (va < vb) return sortAsc ? -1 : 1;
+      if (va > vb) return sortAsc ?  1 : -1;
+      return 0;
+    });
+  }
+
+  document.getElementById("result-count").textContent = `${rows.length}件`;
+
+  const tbody = document.getElementById("table-body");
+  if (rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="${COLUMNS.length}" class="no-data">表示できるレビューがありません</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  rows.forEach(row => {
+    const tr = document.createElement("tr");
+    COLUMNS.forEach(col => {
+      const td = document.createElement("td");
+      if (col.key === "モール") {
+        const cls = row[col.key] === "Amazon" ? "badge-amazon" : "badge-rakuten";
+        td.innerHTML = `<span class="badge ${cls}">${escHtml(row[col.key] || "")}</span>`;
+      } else if (col.key === "評価") {
+        const n = Math.round(row[col.key] || 0);
+        td.innerHTML = `<span class="stars">${"★".repeat(n)}${"☆".repeat(5 - n)}</span>`;
+      } else if (col.key === "本文") {
+        td.className = "cell-body";
+        const text = row[col.key] || "";
+        const p = document.createElement("div");
+        p.className = "cell-body-text";
+        p.textContent = text;
+        p.title = "クリックで全文表示";
+        p.onclick = () => openModal(row["タイトル"] || "レビュー本文", text);
+        td.appendChild(p);
+      } else {
+        td.textContent = row[col.key] ?? "";
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+// ══════════════════════════════════════════
+// Excelエクスポート
+// ══════════════════════════════════════════
+function exportExcel() {
+  if (allReviews.length === 0) return;
+
+  const wb = XLSX.utils.book_new();
+
+  // 全レビューシート
+  const allSheet = XLSX.utils.json_to_sheet(allReviews);
+  XLSX.utils.book_append_sheet(wb, allSheet, "全レビュー");
+
+  // モール別シート
+  ["Amazon", "楽天"].forEach(mall => {
+    const filtered = allReviews.filter(r => r["モール"] === mall);
+    if (filtered.length > 0) {
+      const sheet = XLSX.utils.json_to_sheet(filtered);
+      XLSX.utils.book_append_sheet(wb, sheet, mall);
+    }
+  });
+
+  // サマリーシート
+  const summary = buildSummary(allReviews);
+  if (summary.length > 0) {
+    const sumSheet = XLSX.utils.json_to_sheet(summary);
+    XLSX.utils.book_append_sheet(wb, sumSheet, "サマリー");
+  }
+
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  XLSX.writeFile(wb, `口コミ収集_${date}.xlsx`);
+}
+
+function buildSummary(reviews) {
+  const map = new Map();
+  reviews.forEach(r => {
+    const key = `${r["モール"]}___${r["商品名"] || ""}`;
+    if (!map.has(key)) map.set(key, { モール: r["モール"], 商品名: r["商品名"] || "", ratings: [] });
+    if (r["評価"] != null) map.get(key).ratings.push(r["評価"]);
+  });
+
+  return [...map.values()].map(({ モール, 商品名, ratings }) => {
+    const count = ratings.length;
+    const avg = count ? (ratings.reduce((a, b) => a + b, 0) / count).toFixed(2) : "";
+    const row = { モール, 商品名, レビュー件数: reviews.filter(r => r["モール"] === モール && r["商品名"] === 商品名).length, 平均評価: avg };
+    [5, 4, 3, 2, 1].forEach(n => { row[`★${n}`] = ratings.filter(r => Math.round(r) === n).length; });
+    return row;
+  });
+}
+
+// ══════════════════════════════════════════
+// モーダル
+// ══════════════════════════════════════════
+function openModal(title, body) {
+  document.getElementById("modal-title").textContent = title;
+  document.getElementById("modal-body").textContent = body;
+  document.getElementById("modal-overlay").classList.remove("hidden");
+}
+function closeModal(e) {
+  if (e.target === document.getElementById("modal-overlay")) closeModalDirect();
+}
+function closeModalDirect() {
+  document.getElementById("modal-overlay").classList.add("hidden");
+}
+
+// ══════════════════════════════════════════
+// ユーティリティ
+// ══════════════════════════════════════════
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+</script>
+</body>
+</html>
