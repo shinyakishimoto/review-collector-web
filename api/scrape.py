@@ -5,7 +5,7 @@ Request body:
   { "url": "https://...", "max_reviews": 30 }
 
 Response:
-  { "reviews": [...], "product_name": "...", "error": null }
+  { "reviews": [...], "product_name": "...", "error": null, "debug": {...} }
 """
 
 import json
@@ -17,7 +17,6 @@ from http.server import BaseHTTPRequestHandler
 import requests
 from bs4 import BeautifulSoup
 
-# ブラウザに偽装するヘッダー
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -31,7 +30,7 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
-REQUEST_DELAY = 1.5  # ページ間の待機秒数
+REQUEST_DELAY = 1.5
 
 
 # ──────────────────────────────────────────
@@ -54,7 +53,7 @@ def extract_asin(url: str) -> str | None:
     return None
 
 
-def extract_rakuten_ids(url: str) -> tuple[str, str] | tuple[None, None]:
+def extract_rakuten_ids(url: str):
     m = re.search(r"item\.rakuten\.co\.jp/([^/?#]+)/([^/?#]+)", url)
     if m:
         return m.group(1), m.group(2).rstrip("/")
@@ -65,117 +64,140 @@ def extract_rakuten_ids(url: str) -> tuple[str, str] | tuple[None, None]:
 
 
 # ──────────────────────────────────────────
+# セッション作成
+# ──────────────────────────────────────────
+
+def make_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    return s
+
+
+def safe_get(session: requests.Session, url: str, timeout: int = 15):
+    """GETリクエスト。失敗時はNoneを返す。"""
+    try:
+        resp = session.get(url, timeout=timeout, allow_redirects=True)
+        return resp
+    except requests.RequestException as e:
+        return None
+
+
+def parse_html(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html, "html.parser")
+
+
+# ──────────────────────────────────────────
 # Amazon スクレイパー
 # ──────────────────────────────────────────
 
 def scrape_amazon(url: str, max_reviews: int) -> dict:
     asin = extract_asin(url)
     if not asin:
-        return {"error": "ASINを取得できませんでした。URLを確認してください。", "reviews": [], "product_name": ""}
+        return _result([], "", "ASINを取得できませんでした。URLを確認してください。")
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    session = make_session()
+    # Amazon.co.jpのトップを先に訪問してCookieを取得
+    safe_get(session, "https://www.amazon.co.jp/", timeout=10)
+    time.sleep(1)
 
-    # 商品名を取得
     product_name = _amazon_product_name(session, asin)
-
     reviews = []
-    for page_num in range(1, 20):
+    debug_info = []
+
+    for page_num in range(1, 15):
         if len(reviews) >= max_reviews:
             break
 
         review_url = (
             f"https://www.amazon.co.jp/product-reviews/{asin}/"
-            f"?pageNumber={page_num}&sortBy=recent"
+            f"?pageNumber={page_num}&sortBy=recent&reviewerType=all_reviews"
         )
-        try:
-            resp = session.get(review_url, timeout=12)
-        except requests.RequestException as e:
-            return {"error": f"ネットワークエラー: {e}", "reviews": reviews, "product_name": product_name}
-
-        if resp.status_code != 200:
-            break
+        resp = safe_get(session, review_url)
+        if resp is None:
+            return _result(reviews, product_name, "ネットワークエラーが発生しました。", debug_info)
 
         # ブロック検知
-        if "captcha" in resp.url or "ap/signin" in resp.url:
-            return {
-                "error": "Amazonのアクセス制限（CAPTCHA）が発生しました。時間をおいて再試行してください。",
-                "reviews": reviews,
-                "product_name": product_name,
-            }
+        if "captcha" in resp.url or "ap/signin" in resp.url or resp.status_code in (403, 503):
+            return _result(
+                reviews, product_name,
+                f"Amazonのアクセス制限が発生しました（ステータス: {resp.status_code}）。時間をおいて再試行してください。",
+                debug_info,
+            )
 
-        soup = BeautifulSoup(resp.text, "lxml")
-        page_reviews = _parse_amazon_reviews(soup, asin, product_name)
+        soup = parse_html(resp.text)
+        page_title = soup.title.string if soup.title else "（タイトルなし）"
+        containers = soup.select("[data-hook='review']")
+        debug_info.append({
+            "page": page_num,
+            "url": review_url,
+            "status": resp.status_code,
+            "title": page_title,
+            "containers_found": len(containers),
+        })
 
-        if not page_reviews:
+        if not containers:
+            # ページにレビューがない = 最終ページ or ブロック
             break
 
+        page_reviews = _parse_amazon_reviews(soup, asin, product_name)
         reviews.extend(page_reviews)
         time.sleep(REQUEST_DELAY)
 
-    return {"error": None, "reviews": reviews[:max_reviews], "product_name": product_name}
+    error = None if reviews else "レビューを取得できませんでした。Amazonのbot対策により制限された可能性があります。"
+    return _result(reviews[:max_reviews], product_name, error, debug_info)
 
 
 def _amazon_product_name(session: requests.Session, asin: str) -> str:
-    try:
-        resp = session.get(f"https://www.amazon.co.jp/dp/{asin}", timeout=10)
-        soup = BeautifulSoup(resp.text, "lxml")
-        el = soup.select_one("#productTitle")
-        if el:
-            return el.get_text(strip=True)
-    except Exception:
-        pass
-    return asin
+    resp = safe_get(session, f"https://www.amazon.co.jp/dp/{asin}")
+    if not resp:
+        return asin
+    soup = parse_html(resp.text)
+    el = soup.select_one("#productTitle")
+    return el.get_text(strip=True) if el else asin
 
 
-def _parse_amazon_reviews(soup: BeautifulSoup, asin: str, product_name: str) -> list[dict]:
+def _parse_amazon_reviews(soup: BeautifulSoup, asin: str, product_name: str) -> list:
     reviews = []
+    today = datetime.now().strftime("%Y-%m-%d")
     for div in soup.select("[data-hook='review']"):
         try:
             # 評価
             rating = None
-            rating_el = div.select_one("[data-hook='review-star-rating'] .a-icon-alt")
-            if rating_el:
-                m = re.search(r"([\d.]+)", rating_el.get_text())
+            r_el = div.select_one("[data-hook='review-star-rating'] .a-icon-alt")
+            if r_el:
+                m = re.search(r"([\d.]+)", r_el.get_text())
                 if m:
                     rating = float(m.group(1))
 
-            # タイトル
+            # タイトル（アイコンを除去）
             title = ""
-            title_el = div.select_one("[data-hook='review-title']")
-            if title_el:
-                # アイコンのテキストを除く
-                for icon in title_el.select(".a-icon-alt"):
+            t_el = div.select_one("[data-hook='review-title']")
+            if t_el:
+                for icon in t_el.select(".a-icon-alt"):
                     icon.decompose()
-                title = title_el.get_text(strip=True)
+                title = t_el.get_text(strip=True)
 
             # 本文
             body = ""
-            body_el = div.select_one("[data-hook='review-body'] span")
-            if body_el:
-                body = body_el.get_text(strip=True)
+            b_el = div.select_one("[data-hook='review-body'] span")
+            if b_el:
+                body = b_el.get_text(strip=True)
 
             # 投稿日
             review_date = ""
-            date_el = div.select_one("[data-hook='review-date']")
-            if date_el:
-                m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_el.get_text())
+            d_el = div.select_one("[data-hook='review-date']")
+            if d_el:
+                m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", d_el.get_text())
                 if m:
                     review_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
             # 役立った数
-            helpful_count = 0
-            helpful_el = div.select_one("[data-hook='helpful-vote-statement']")
-            if helpful_el:
-                m = re.search(r"(\d+)", helpful_el.get_text())
+            helpful = 0
+            h_el = div.select_one("[data-hook='helpful-vote-statement']")
+            if h_el:
+                m = re.search(r"(\d+)", h_el.get_text())
                 if m:
-                    helpful_count = int(m.group(1))
-
-            # バリエーション
-            variant = ""
-            variant_el = div.select_one("[data-hook='format-strip']")
-            if variant_el:
-                variant = variant_el.get_text(strip=True)
+                    helpful = int(m.group(1))
 
             if body:
                 reviews.append({
@@ -186,9 +208,8 @@ def _parse_amazon_reviews(soup: BeautifulSoup, asin: str, product_name: str) -> 
                     "タイトル": title,
                     "本文": body,
                     "投稿日": review_date,
-                    "役立った数": helpful_count,
-                    "バリエーション": variant,
-                    "収集日": datetime.now().strftime("%Y-%m-%d"),
+                    "役立った数": helpful,
+                    "収集日": today,
                 })
         except Exception:
             continue
@@ -202,88 +223,85 @@ def _parse_amazon_reviews(soup: BeautifulSoup, asin: str, product_name: str) -> 
 def scrape_rakuten(url: str, max_reviews: int) -> dict:
     shop_id, item_id = extract_rakuten_ids(url)
     if not shop_id or not item_id:
-        return {"error": "ショップID・商品IDを取得できませんでした。URLを確認してください。", "reviews": [], "product_name": ""}
+        return _result([], "", "ショップID・商品IDを取得できませんでした。URLを確認してください。")
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    session = make_session()
+    # 楽天トップを先に訪問してCookieを取得
+    safe_get(session, "https://www.rakuten.co.jp/", timeout=10)
+    time.sleep(1)
 
     product_name = _rakuten_product_name(session, shop_id, item_id, url)
-
     reviews = []
+    debug_info = []
+
     for page_num in range(1, 30):
         if len(reviews) >= max_reviews:
             break
 
         review_url = f"https://review.rakuten.co.jp/item/1/{shop_id}/{item_id}/{page_num}/"
-        try:
-            resp = session.get(review_url, timeout=12)
-        except requests.RequestException as e:
-            return {"error": f"ネットワークエラー: {e}", "reviews": reviews, "product_name": product_name}
+        resp = safe_get(session, review_url)
+        if resp is None:
+            return _result(reviews, product_name, "ネットワークエラーが発生しました。", debug_info)
 
-        if resp.status_code != 200:
+        soup = parse_html(resp.text)
+        page_title = soup.title.string if soup.title else "（タイトルなし）"
+
+        # セレクタを広く試みる
+        containers = (
+            soup.select(".revRvwUserRevBox")
+            or soup.select("[class*='revRvwUserRev']")
+            or soup.select("[class*='reviewItem']")
+            or soup.select("[class*='review-item']")
+            or soup.select("[class*='ReviewItem']")
+        )
+
+        debug_info.append({
+            "page": page_num,
+            "url": review_url,
+            "status": resp.status_code,
+            "title": page_title,
+            "containers_found": len(containers),
+        })
+
+        if not containers:
             break
 
-        soup = BeautifulSoup(resp.text, "lxml")
-        page_reviews = _parse_rakuten_reviews(soup, shop_id, item_id, product_name)
-
-        if not page_reviews:
-            # レビューなし or 最終ページ
-            break
-
+        page_reviews = _parse_rakuten_reviews(soup, containers, shop_id, item_id, product_name)
         reviews.extend(page_reviews)
 
-        # 次ページリンク確認
-        if not soup.select_one("a[rel='next'], .paginationNext a, [class*='next'] a"):
+        # 次ページ確認
+        has_next = bool(
+            soup.select_one("a[rel='next']")
+            or soup.select_one(".paginationNext a")
+            or soup.select_one("[class*='next'] a")
+            or soup.find("a", string=re.compile(r"次"))
+        )
+        if not has_next:
             break
 
         time.sleep(REQUEST_DELAY)
 
-    return {"error": None, "reviews": reviews[:max_reviews], "product_name": product_name}
+    error = None if reviews else "レビューを取得できませんでした。ページ構造の変更、またはレビューが0件の可能性があります。"
+    return _result(reviews[:max_reviews], product_name, error, debug_info)
 
 
 def _rakuten_product_name(session: requests.Session, shop_id: str, item_id: str, original_url: str) -> str:
-    # 商品ページから取得
     if "item.rakuten.co.jp" in original_url:
-        try:
-            resp = session.get(original_url, timeout=10)
-            soup = BeautifulSoup(resp.text, "lxml")
-            for selector in [".item_name", "h1.item-name", "h1", "title"]:
-                el = soup.select_one(selector)
+        resp = safe_get(session, original_url)
+        if resp:
+            soup = parse_html(resp.text)
+            for sel in [".item_name", "h1.item-name", "#rakutenLimitedId_title", "h1"]:
+                el = soup.select_one(sel)
                 if el:
                     name = el.get_text(strip=True)
-                    if name and len(name) > 3:
-                        return name[:100]
-        except Exception:
-            pass
-
-    # レビューページから取得
-    try:
-        review_url = f"https://review.rakuten.co.jp/item/1/{shop_id}/{item_id}/1/"
-        resp = session.get(review_url, timeout=10)
-        soup = BeautifulSoup(resp.text, "lxml")
-        for selector in [".revItemBox__itemName", ".item-name", "h1"]:
-            el = soup.select_one(selector)
-            if el:
-                name = el.get_text(strip=True)
-                if name and len(name) > 3:
-                    return name[:100]
-    except Exception:
-        pass
-
-    return f"{shop_id}/{item_id}"
+                    if len(name) > 3:
+                        return name[:120]
+    return f"{shop_id} / {item_id}"
 
 
-def _parse_rakuten_reviews(soup: BeautifulSoup, shop_id: str, item_id: str, product_name: str) -> list[dict]:
+def _parse_rakuten_reviews(soup: BeautifulSoup, containers, shop_id: str, item_id: str, product_name: str) -> list:
     reviews = []
-
-    # 複数のセレクタパターンを試みる（楽天はクラス名が変わることがある）
-    containers = (
-        soup.select(".revRvwUserRevBox")
-        or soup.select(".review-item")
-        or soup.select("[class*='reviewBox']")
-        or soup.select("[class*='revItem']")
-    )
-
+    today = datetime.now().strftime("%Y-%m-%d")
     for container in containers:
         try:
             # 評価
@@ -291,42 +309,38 @@ def _parse_rakuten_reviews(soup: BeautifulSoup, shop_id: str, item_id: str, prod
 
             # タイトル
             title = ""
-            for sel in [".revRvwUserRevTtl", "[class*='title']", "[class*='Title']"]:
+            for sel in [".revRvwUserRevTtl", "[class*='title']", "[class*='Title']", "h3", "h4"]:
                 el = container.select_one(sel)
                 if el:
                     title = el.get_text(strip=True)
                     break
 
-            # 本文
+            # 本文 ― テキストが最も長い <p> または div を本文と見なす
             body = ""
-            for sel in [".revRvwUserRevBody", "[class*='body']", "[class*='Body']", "[class*='comment']", "p"]:
-                el = container.select_one(sel)
-                if el:
-                    text = el.get_text(strip=True)
-                    if len(text) > 10:  # タイトルと区別するため短すぎるものは除外
-                        body = text
-                        break
+            candidates = container.select("p, [class*='body'], [class*='Body'], [class*='comment'], [class*='text']")
+            for el in candidates:
+                text = el.get_text(strip=True)
+                if len(text) > len(body):
+                    body = text
+
+            # 本文がまだ取れていなければ最も長いテキストノードを使う
+            if not body:
+                all_text = [el.get_text(strip=True) for el in container.find_all(True)]
+                if all_text:
+                    body = max(all_text, key=len)
 
             # 投稿日
             review_date = ""
-            for sel in [".revRvwUserRevDate", "[class*='date']", "[class*='Date']", "time"]:
+            for sel in ["[class*='date']", "[class*='Date']", "time"]:
                 el = container.select_one(sel)
                 if el:
-                    date_text = el.get("datetime") or el.get_text()
-                    m = re.search(r"(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})", date_text)
+                    raw = el.get("datetime") or el.get_text()
+                    m = re.search(r"(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})", raw)
                     if m:
                         review_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
                         break
 
-            # 購入者情報
-            user_info = ""
-            for sel in ["[class*='userInfo']", "[class*='userData']", "[class*='reviewer']"]:
-                el = container.select_one(sel)
-                if el:
-                    user_info = el.get_text(strip=True)
-                    break
-
-            if body:
+            if body and len(body) > 5:
                 reviews.append({
                     "モール": "楽天",
                     "商品名": product_name,
@@ -336,26 +350,23 @@ def _parse_rakuten_reviews(soup: BeautifulSoup, shop_id: str, item_id: str, prod
                     "タイトル": title,
                     "本文": body,
                     "投稿日": review_date,
-                    "投稿者情報": user_info,
-                    "収集日": datetime.now().strftime("%Y-%m-%d"),
+                    "収集日": today,
                 })
         except Exception:
             continue
-
     return reviews
 
 
-def _extract_rakuten_rating(container: BeautifulSoup) -> float | None:
+def _extract_rakuten_rating(container) -> float | None:
     for sel in ["[class*='rating']", "[class*='star']", "[class*='Rating']", "[class*='Star']"]:
         el = container.select_one(sel)
         if not el:
             continue
-        # class名から数値を取る (例: "star5", "rating-4")
         class_str = " ".join(el.get("class", []))
-        m = re.search(r"[^0-9]([1-5])[^0-9]?$", class_str) or re.search(r"[^0-9]([1-5])[^0-9]", class_str)
+        # class名末尾の数字（例: star5, rating-4）
+        m = re.search(r"[^0-9]([1-5])(?:[^0-9]|$)", class_str)
         if m:
             return float(m.group(1))
-        # aria-label / title 属性
         for attr in ["aria-label", "title"]:
             val = el.get(attr, "")
             m = re.search(r"([\d.]+)", val)
@@ -367,30 +378,47 @@ def _extract_rakuten_rating(container: BeautifulSoup) -> float | None:
 
 
 # ──────────────────────────────────────────
+# ヘルパー
+# ──────────────────────────────────────────
+
+def _result(reviews: list, product_name: str, error=None, debug=None) -> dict:
+    return {
+        "reviews": reviews,
+        "product_name": product_name,
+        "error": error,
+        "debug": debug or [],
+    }
+
+
+# ──────────────────────────────────────────
 # Vercel ハンドラ
 # ──────────────────────────────────────────
 
 class handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
-        pass  # サーバーログを抑制
+        pass
 
     def do_OPTIONS(self):
-        self._send_cors()
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def do_POST(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length else {}
         except (json.JSONDecodeError, ValueError):
-            self._respond(400, {"error": "リクエストのJSON形式が不正です。"})
+            self._respond(400, _result([], "", "リクエストのJSON形式が不正です。"))
             return
 
         url = (body.get("url") or "").strip()
         max_reviews = min(int(body.get("max_reviews", 30)), 100)
 
         if not url:
-            self._respond(400, {"error": "URLが指定されていません。"})
+            self._respond(400, _result([], "", "URLが指定されていません。"))
             return
 
         mall = detect_mall(url)
@@ -399,23 +427,16 @@ class handler(BaseHTTPRequestHandler):
         elif mall == "rakuten":
             result = scrape_rakuten(url, max_reviews)
         else:
-            self._respond(400, {"error": "対応していないURLです。Amazon・楽天のURLを指定してください。"})
+            self._respond(400, _result([], "", "対応していないURLです。Amazon・楽天のURLを指定してください。"))
             return
 
         self._respond(200, result)
 
     def _respond(self, status: int, data: dict):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(body)
-
-    def _send_cors(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
+        self.wfile.write(payload)

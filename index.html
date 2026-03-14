@@ -211,6 +211,39 @@
     .status-running  { color: var(--blue); }
     .status-done     { color: var(--green); }
     .status-error    { color: var(--red); }
+    .error-msg {
+      grid-column: 1 / -1;
+      background: #fef2f2;
+      border: 1px solid #fca5a5;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: .82rem;
+      color: var(--red);
+      line-height: 1.5;
+    }
+    .debug-toggle {
+      font-size: .75rem;
+      color: var(--gray-3);
+      cursor: pointer;
+      text-decoration: underline;
+      margin-top: 4px;
+      display: inline-block;
+    }
+    .debug-box {
+      display: none;
+      background: #f8f8f8;
+      border: 1px solid var(--gray-2);
+      border-radius: 4px;
+      padding: 8px;
+      font-size: .75rem;
+      font-family: monospace;
+      color: var(--gray-4);
+      white-space: pre-wrap;
+      word-break: break-all;
+      margin-top: 4px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
     .spinner {
       width: 16px; height: 16px;
       border: 2px solid var(--blue-lt);
@@ -603,25 +636,42 @@ async function startCollection() {
 
     try {
       const result = await fetchReviews(url, maxReviews);
+      const hasError = result.error && result.reviews.length === 0;
 
-      if (result.error && result.reviews.length === 0) {
+      if (hasError) {
         document.getElementById(`dot-${i}`).outerHTML = `<div class="icon-dot error" id="dot-${i}"></div>`;
         status.className = "status status-error";
-        status.textContent = `エラー`;
-        items[i].title = result.error;
+        status.textContent = `0件`;
       } else {
         document.getElementById(`dot-${i}`).outerHTML = `<div class="icon-dot done" id="dot-${i}"></div>`;
         status.className = "status status-done";
         status.textContent = `${result.reviews.length}件取得`;
         allReviews.push(...result.reviews);
-        if (result.error) {
-          items[i].title = `警告: ${result.error}`;
-        }
+      }
+
+      // エラーメッセージ＆デバッグ情報を表示
+      if (result.error || (result.debug && result.debug.length > 0)) {
+        const debugId = `debug-${i}`;
+        const errorHtml = result.error
+          ? `<div class="error-msg">${escHtml(result.error)}</div>` : "";
+        const debugHtml = result.debug && result.debug.length > 0
+          ? `<span class="debug-toggle" onclick="toggleDebug('${debugId}')">詳細ログを見る</span>
+             <div class="debug-box" id="${debugId}">${escHtml(JSON.stringify(result.debug, null, 2))}</div>`
+          : "";
+        const extra = document.createElement("div");
+        extra.style.gridColumn = "1 / -1";
+        extra.innerHTML = errorHtml + debugHtml;
+        items[i].appendChild(extra);
       }
     } catch (e) {
       document.getElementById(`dot-${i}`).outerHTML = `<div class="icon-dot error" id="dot-${i}"></div>`;
       status.className = "status status-error";
       status.textContent = "通信エラー";
+      const extra = document.createElement("div");
+      extra.className = "error-msg";
+      extra.style.gridColumn = "1 / -1";
+      extra.textContent = `通信エラー: ${e.message}`;
+      items[i].appendChild(extra);
     }
 
     doneCount++;
@@ -813,6 +863,14 @@ function closeModal(e) {
 }
 function closeModalDirect() {
   document.getElementById("modal-overlay").classList.add("hidden");
+}
+
+// ══════════════════════════════════════════
+// デバッグ
+// ══════════════════════════════════════════
+function toggleDebug(id) {
+  const el = document.getElementById(id);
+  el.style.display = el.style.display === "block" ? "none" : "block";
 }
 
 // ══════════════════════════════════════════
