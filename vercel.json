@@ -1,7 +1,6 @@
 {
   "functions": {
     "api/scrape.py": {
-      "runtime": "python3.12",
       "maxDuration": 60,
       "memory": 512
     }
