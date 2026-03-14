@@ -221,32 +221,40 @@ def _parse_amazon_reviews(soup: BeautifulSoup, asin: str, product_name: str) -> 
 # ──────────────────────────────────────────
 
 def scrape_rakuten(url: str, max_reviews: int) -> dict:
-    shop_id, item_id = extract_rakuten_ids(url)
-    if not shop_id or not item_id:
-        return _result([], "", "ショップID・商品IDを取得できませんでした。URLを確認してください。")
-
     session = make_session()
-    # 楽天トップを先に訪問してCookieを取得
     safe_get(session, "https://www.rakuten.co.jp/", timeout=10)
     time.sleep(1)
 
-    product_name = _rakuten_product_name(session, shop_id, item_id, url)
+    # review.rakuten.co.jp URL はそのまま使う
+    # item.rakuten.co.jp URL はレビューページURLに変換する
+    if "review.rakuten.co.jp" in url:
+        start_url = url.rstrip("/") + "/"
+    else:
+        shop_id, item_id = extract_rakuten_ids(url)
+        if not shop_id or not item_id:
+            return _result([], "", "ショップID・商品IDを取得できませんでした。URLを確認してください。")
+        start_url = f"https://review.rakuten.co.jp/item/1/{shop_id}/{item_id}/1.1/"
+
     reviews = []
     debug_info = []
+    current_url = start_url
+    product_name = ""
+    page_num = 0
 
-    for page_num in range(1, 30):
-        if len(reviews) >= max_reviews:
-            break
-
-        review_url = f"https://review.rakuten.co.jp/item/1/{shop_id}/{item_id}/{page_num}/"
-        resp = safe_get(session, review_url)
+    while len(reviews) < max_reviews:
+        page_num += 1
+        resp = safe_get(session, current_url)
         if resp is None:
             return _result(reviews, product_name, "ネットワークエラーが発生しました。", debug_info)
 
         soup = parse_html(resp.text)
         page_title = soup.title.string if soup.title else "（タイトルなし）"
 
-        # セレクタを広く試みる
+        # 商品名（初回のみ取得）
+        if not product_name:
+            product_name = _rakuten_product_name_from_review_page(soup, url, session)
+
+        # レビューコンテナを広く探す
         containers = (
             soup.select(".revRvwUserRevBox")
             or soup.select("[class*='revRvwUserRev']")
@@ -257,7 +265,7 @@ def scrape_rakuten(url: str, max_reviews: int) -> dict:
 
         debug_info.append({
             "page": page_num,
-            "url": review_url,
+            "url": current_url,
             "status": resp.status_code,
             "title": page_title,
             "containers_found": len(containers),
@@ -266,40 +274,73 @@ def scrape_rakuten(url: str, max_reviews: int) -> dict:
         if not containers:
             break
 
-        page_reviews = _parse_rakuten_reviews(soup, containers, shop_id, item_id, product_name)
+        page_reviews = _parse_rakuten_reviews(soup, containers, product_name)
         reviews.extend(page_reviews)
 
-        # 次ページ確認
-        has_next = bool(
-            soup.select_one("a[rel='next']")
-            or soup.select_one(".paginationNext a")
-            or soup.select_one("[class*='next'] a")
-            or soup.find("a", string=re.compile(r"次"))
-        )
-        if not has_next:
+        # 次ページリンクを探してたどる（URL構築はしない）
+        next_url = _find_next_page_url(soup, current_url)
+        if not next_url:
             break
-
+        current_url = next_url
         time.sleep(REQUEST_DELAY)
 
-    error = None if reviews else "レビューを取得できませんでした。ページ構造の変更、またはレビューが0件の可能性があります。"
+    error = None if reviews else "レビューを取得できませんでした。ページ構造が変更されたか、レビューが0件の可能性があります。"
     return _result(reviews[:max_reviews], product_name, error, debug_info)
 
 
-def _rakuten_product_name(session: requests.Session, shop_id: str, item_id: str, original_url: str) -> str:
+def _rakuten_product_name_from_review_page(soup: BeautifulSoup, original_url: str, session: requests.Session) -> str:
+    # レビューページ内の商品名要素を探す
+    for sel in [".revItemBox__itemName", ".item-name", "[class*='itemName']", "[class*='item_name']"]:
+        el = soup.select_one(sel)
+        if el:
+            name = el.get_text(strip=True)
+            if len(name) > 3:
+                return name[:120]
+
+    # item.rakuten.co.jp URLなら商品ページから取得
     if "item.rakuten.co.jp" in original_url:
         resp = safe_get(session, original_url)
         if resp:
-            soup = parse_html(resp.text)
+            item_soup = parse_html(resp.text)
             for sel in [".item_name", "h1.item-name", "#rakutenLimitedId_title", "h1"]:
-                el = soup.select_one(sel)
+                el = item_soup.select_one(sel)
                 if el:
                     name = el.get_text(strip=True)
                     if len(name) > 3:
                         return name[:120]
-    return f"{shop_id} / {item_id}"
+
+    return ""
 
 
-def _parse_rakuten_reviews(soup: BeautifulSoup, containers, shop_id: str, item_id: str, product_name: str) -> list:
+def _find_next_page_url(soup: BeautifulSoup, current_url: str) -> str | None:
+    """ページ内の「次へ」リンクを探してフルURLを返す"""
+    # rel="next" が最も信頼できる
+    el = soup.select_one("a[rel='next']")
+    if el and el.get("href"):
+        return _abs_url(el["href"], current_url)
+
+    # テキスト「次」を含むページネーションリンク
+    for a in soup.find_all("a", href=True):
+        text = a.get_text(strip=True)
+        cls = " ".join(a.get("class", []))
+        if text in ("次へ", "次", ">", "»") or "next" in cls.lower():
+            return _abs_url(a["href"], current_url)
+
+    return None
+
+
+def _abs_url(href: str, base_url: str) -> str:
+    if href.startswith("http"):
+        return href
+    if href.startswith("/"):
+        from urllib.parse import urlparse
+        parsed = urlparse(base_url)
+        return f"{parsed.scheme}://{parsed.netloc}{href}"
+    # 相対URL
+    return base_url.rsplit("/", 1)[0] + "/" + href
+
+
+def _parse_rakuten_reviews(soup: BeautifulSoup, containers, product_name: str) -> list:
     reviews = []
     today = datetime.now().strftime("%Y-%m-%d")
     for container in containers:
@@ -344,8 +385,6 @@ def _parse_rakuten_reviews(soup: BeautifulSoup, containers, shop_id: str, item_i
                 reviews.append({
                     "モール": "楽天",
                     "商品名": product_name,
-                    "shop_id": shop_id,
-                    "item_id": item_id,
                     "評価": rating,
                     "タイトル": title,
                     "本文": body,
